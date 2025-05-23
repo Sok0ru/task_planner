@@ -6,6 +6,10 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFont>
+#include <QLabel>
+#include <QMessageBox>
+#include <QDateEdit>
+#include <QListWidgetItem>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -19,32 +23,27 @@ MainWindow::MainWindow(QWidget *parent)
 
 void MainWindow::setupUI()
 {
-    // Настройка дерева дат
-    ui->datesTree->setColumnCount(1);
+    // Настройка элементов интерфейса
     ui->datesTree->setHeaderLabel("Даты");
+    ui->datesTree->setSelectionMode(QAbstractItemView::SingleSelection);
 
-    // Настройка списка задач
-    ui->tasksList->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Кнопки
+    connect(ui->addButton, &QPushButton::clicked, this, &MainWindow::onAddTaskClicked);
+    connect(ui->removeButton, &QPushButton::clicked, this, &MainWindow::onRemoveTaskClicked);
+    connect(ui->completeButton, &QPushButton::clicked, this, &MainWindow::onCompleteClicked);
+    connect(ui->promoteButton, &QPushButton::clicked, this, &MainWindow::onPromoteClicked);
+    connect(ui->planFutureButton, &QPushButton::clicked, this, &MainWindow::onPlanForFutureClicked);
 
-    // Соединение сигналов
-    connect(ui->datesTree, &QTreeWidget::itemClicked,
-            this, &MainWindow::onDateSelected);
-    connect(ui->addButton, &QPushButton::clicked,
-            this, &MainWindow::onAddTaskClicked);
-    connect(ui->removeButton, &QPushButton::clicked,
-            this, &MainWindow::onRemoveTaskClicked);
-    connect(ui->completeButton, &QPushButton::clicked,
-            this, &MainWindow::onCompleteClicked);
-    connect(ui->promoteButton, &QPushButton::clicked,
-            this, &MainWindow::onPromoteClicked);
-    connect(ui->tasksList, &QListWidget::itemChanged,
-            this, &MainWindow::onTaskStatusChanged);
+    // Выбор даты
+    connect(ui->datesTree, &QTreeWidget::itemClicked, [this](QTreeWidgetItem *item) {
+        onDateSelected(item->data(0, Qt::UserRole).toDate());
+    });
 
-    // Добавляем текущую дату
+    // Инициализация текущей даты
     currentDate = QDate::currentDate();
-    addDateToTree(currentDate);
-    updateTasksView();
+    updateDatesTree();
 }
+
 
 void MainWindow::applyDarkTheme()
 {
@@ -99,6 +98,57 @@ void MainWindow::applyDarkTheme()
     ui->promoteButton->setText("↑ Повысить");
 }
 
+void MainWindow::onPlanForFutureClicked()
+{
+    showDateInputDialog();
+}
+
+void MainWindow::showDateInputDialog()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle("Планирование на дату");
+
+    QVBoxLayout layout(&dialog);
+    QDateEdit dateEdit;
+    dateEdit.setDate(QDate::currentDate().addDays(1));
+    dateEdit.setMinimumDate(QDate::currentDate().addDays(1));
+    dateEdit.setDisplayFormat("dd.MM.yyyy");
+
+    QPushButton okButton("OK");
+
+    layout.addWidget(new QLabel("Выберите дату:"));
+    layout.addWidget(&dateEdit);
+    layout.addWidget(&okButton);
+
+    connect(&okButton, &QPushButton::clicked, [&]() {
+        bool ok;
+        QString text = QInputDialog::getText(this, "Новая задача",
+                                             "Текст задачи:", QLineEdit::Normal, "", &ok);
+        if (ok && !text.isEmpty()) {
+            addTask(text, dateEdit.date());
+            saveTasks();
+            updateDatesTree();
+        }
+        dialog.close();
+    });
+
+    dialog.exec();
+}
+
+
+void MainWindow::addTask(const QString &text, const QDate &date, bool completed, int priority)
+{
+    tasksData[date].append({text, completed, priority, date});
+
+    // Если дата новая, добавляем в дерево
+    if (!ui->datesTree->findItems(date.toString("dd.MM.yyyy"), Qt::MatchExactly).isEmpty()) {
+        QTreeWidgetItem *item = new QTreeWidgetItem(ui->datesTree);
+        item->setText(0, date.toString("dd.MM.yyyy"));
+        item->setData(0, Qt::UserRole, date);
+        ui->datesTree->sortItems(0, Qt::AscendingOrder);
+    }
+}
+
 void MainWindow::addDateToTree(const QDate &date)
 {
     QString dateStr = date.toString("dd.MM.yyyy");
@@ -115,10 +165,28 @@ void MainWindow::addDateToTree(const QDate &date)
     ui->datesTree->sortItems(0, Qt::AscendingOrder);
 }
 
-void MainWindow::onDateSelected(QTreeWidgetItem *item)
+void MainWindow::onDateSelected(const QDate &date)
 {
-    currentDate = item->data(0, Qt::UserRole).toDate();
+    currentDate = date;
     updateTasksView();
+}
+
+void MainWindow::updateDatesTree()
+{
+    ui->datesTree->clear();
+    QList<QDate> dates = tasksData.keys();
+    std::sort(dates.begin(), dates.end());
+
+    for (const QDate &date : dates) {
+        QTreeWidgetItem *item = new QTreeWidgetItem(ui->datesTree);
+        item->setText(0, date.toString("dd.MM.yyyy"));
+        item->setData(0, Qt::UserRole, date);
+
+        // Подсветка сегодняшней даты
+        if (date == QDate::currentDate()) {
+            item->setBackground(0, QBrush(QColor(100, 100, 150)));
+        }
+    }
 }
 
 void MainWindow::onAddTaskClicked()
@@ -130,7 +198,6 @@ void MainWindow::onAddTaskClicked()
     if (ok && !text.isEmpty()) {
         tasksData[currentDate].append({text, false, 0});
         updateTasksView();
-        saveTasks();
         saveTasks(); // Явное сохранение после добавления
         qDebug() << "Задача добавлена, файл должен быть сохранён";
     }
@@ -195,18 +262,20 @@ void MainWindow::updateTasksView()
     ui->tasksList->clear();
     if (!tasksData.contains(currentDate)) return;
 
-    // Сортируем по приоритету (по убыванию)
-    auto& tasks = tasksData[currentDate];
-    std::sort(tasks.begin(), tasks.end(),
-        [](const TaskData& a, const TaskData& b) {
-            return a.priority > b.priority;
-        });
+    // Сортируем задачи по приоритету
+    auto &tasks = tasksData[currentDate];
+    std::sort(tasks.begin(), tasks.end(), [](const TaskData &a, const TaskData &b) {
+        return a.priority > b.priority;
+    });
 
-    for (const auto& task : tasks) {
+    // Добавляем задачи в список
+    for (const TaskData &task : tasks) {
         QListWidgetItem *item = new QListWidgetItem(task.text, ui->tasksList);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(task.completed ? Qt::Checked : Qt::Unchecked);
+        item->setData(Qt::UserRole, QVariant::fromValue(task));
 
+        // Визуальное оформление
         QFont font = item->font();
         font.setStrikeOut(task.completed);
         item->setFont(font);
@@ -219,38 +288,30 @@ void MainWindow::saveTasks()
     QJsonObject root;
     for (auto it = tasksData.begin(); it != tasksData.end(); ++it) {
         QJsonArray tasksArray;
-        for (const auto& task : it.value()) {
+        for (const auto &task : it.value()) {
             QJsonObject taskObj;
             taskObj["text"] = task.text;
             taskObj["completed"] = task.completed;
             taskObj["priority"] = task.priority;
+            taskObj["dueDate"] = task.dueDate.toString("yyyy-MM-dd");
             tasksArray.append(taskObj);
         }
-        root[it.key().toString("dd.MM.yyyy")] = tasksArray;
+        root[it.key().toString("yyyy-MM-dd")] = tasksArray;
     }
 
     QFile file("tasks.json");
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(root).toJson());
-        QString path = QCoreApplication::applicationDirPath() + "/tasks.json";
-        qDebug() << "Пытаюсь сохранить в:" << path;
-
-        QFile file(path);
-        if (!file.open(QIODevice::WriteOnly)) {
-            qDebug() << "Ошибка открытия файла:" << file.errorString();
-            return;
-        }
-
-        // ... (остальной код сохранения)
-        file.flush(); // Принудительная запись
-        qDebug() << "Файл успешно сохранён";
     }
+    file.flush(); // Принудительная запись
+    qDebug() << "Файл успешно сохранён";
 
-    if (!file.open(QIODevice::WriteOnly)) {
-        qWarning() << "Не удалось сохранить задачи!";
-        return;
 
-    }
+if (!file.open(QIODevice::WriteOnly)) {
+    qWarning() << "Не удалось сохранить задачи!";
+    return;
+
+}
 }
 
 void MainWindow::loadTasks()
@@ -261,22 +322,29 @@ void MainWindow::loadTasks()
         QJsonObject root = doc.object();
 
         for (auto it = root.begin(); it != root.end(); ++it) {
-            QDate date = QDate::fromString(it.key(), "dd.MM.yyyy");
-            QList<TaskData> tasks;
+            QDate date = QDate::fromString(it.key(), "yyyy-MM-dd");
+            if (!date.isValid()) continue;
 
-            for (const auto& taskVal : it.value().toArray()) {
+            QList<TaskData> tasks;
+            for (const auto &taskVal : it.value().toArray()) {
                 QJsonObject taskObj = taskVal.toObject();
-                tasks.append({
-                    taskObj["text"].toString(),
-                    taskObj["completed"].toBool(),
-                    taskObj["priority"].toInt()
-                });
+                TaskData task;
+                task.text = taskObj["text"].toString();
+                task.completed = taskObj["completed"].toBool();
+                task.priority = taskObj["priority"].toInt();
+                task.dueDate = QDate::fromString(taskObj["dueDate"].toString(), "yyyy-MM-dd");
+
+                if (!task.dueDate.isValid()) {
+                    task.dueDate = date;  // Для обратной совместимости
+                }
+
+                tasks.append(task);
             }
 
             tasksData[date] = tasks;
-            addDateToTree(date);
         }
     }
+    updateDatesTree();
 }
 
 MainWindow::~MainWindow()

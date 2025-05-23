@@ -2,9 +2,9 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QTreeWidgetItem>
 #include <QDate>
 #include <QMap>
+#include <QJsonObject>
 #include <QListWidgetItem>
 
 QT_BEGIN_NAMESPACE
@@ -20,11 +20,13 @@ public:
     ~MainWindow();
 
 private slots:
-    void onDateSelected(QTreeWidgetItem *item);
+    void onDateSelected(const QDate &date);
     void onAddTaskClicked();
     void onRemoveTaskClicked();
     void onCompleteClicked();
     void onPromoteClicked();
+    void onPlanForFutureClicked();  // Новый слот
+    void addDateToTree(const QDate &date);
     void onTaskStatusChanged(QListWidgetItem *item);
 
 private:
@@ -34,6 +36,7 @@ private:
         QString text;
         bool completed;
         int priority;
+        QDate dueDate;  // Дата выполнения
     };
 
     QMap<QDate, QList<TaskData>> tasksData;
@@ -43,7 +46,9 @@ private:
     void loadTasks();
     void saveTasks();
     void updateTasksView();
-    void addDateToTree(const QDate &date);
+    void updateDatesTree();
+    void addTask(const QString &text, const QDate &date, bool completed = false, int priority = 0);
     void applyDarkTheme();
+    void showDateInputDialog();  // Диалог выбора даты
 };
 #endif // MAINWINDOW_H
